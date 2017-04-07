@@ -36,6 +36,7 @@
 
 #include "private.h"
 #include "glib_compat.h"
+#include "driver/memory_cache.h"
 
 // This function borrowed from cityhash-1.0.3
 uint64_t hash128to64(
@@ -658,6 +659,7 @@ v2p_cache_flush(
         if ( v )
             g_hash_table_remove_all(v);
     }
+    memory_cache_flush(vmi);
     dbprint(VMI_DEBUG_V2PCACHE, "--V2P cache flushed\n");
 }
 
