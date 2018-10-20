@@ -91,3 +91,4 @@ tools/linux-offset-finder/modules.order
 *.lo
 .dirstamp
 .deps
+build
