@@ -357,7 +357,7 @@ exec_memory_access_success(
  * 2. In fact, the shm-snapshot patch (kvm-physmem-access-physmem-snapshot_1.6.0.patch)
  *      includes pmemaccess patch.
  */
-inline status_t
+static status_t
 test_using_kvm_patch(
     kvm_instance_t *kvm)
 {
