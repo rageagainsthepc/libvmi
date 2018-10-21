@@ -43,6 +43,7 @@ option(ENABLE_WINDOWS "Build Windows introspection" ON)
 option(ENABLE_LINUX "Build Linux introspection" ON)
 option(ENABLE_FREEBSD "Build FreeBSD introspection" ON)
 
+option(REKALL_PROFILES "Use Rekall's JSON profiles" ON)
 option(ENABLE_SAFETY_CHECKS "Enable API safety checks" ON)
 option(BUILD_EXAMPLES "Build the examples" ON)
 #-----------------------------------------------------------------------------
