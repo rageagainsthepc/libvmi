@@ -20,8 +20,12 @@ if (ENABLE_KVM)
     target_include_directories(kvm_driver PRIVATE ${GLIB_INCLUDE_DIRS})
     # CMAKE_DL_LIBS -> dlopen* lib
     target_link_libraries(kvm_driver ${CMAKE_DL_LIBS} ${JSON-C_LIBRARIES})
-endif (ENABLE_KVM)
 
+    if (ENABLE_SHM_SNAPSHOT)
+        # shm_open/shm_unlink are provided by -lrt
+        target_link_libraries(kvm_driver rt)
+    endif (ENABLE_SHM_SNAPSHOT)
+endif (ENABLE_KVM)
 
 if (ENABLE_XEN)
     set(xen_driver_src
@@ -92,6 +96,12 @@ if (ENABLE_SHM_SNAPSHOT)
     target_include_directories(shm PRIVATE ${GLIB_INCLUDE_DIRS})
 endif (ENABLE_SHM_SNAPSHOT)
 
+if (REKALL_PROFILES)
+    add_library(rekall SHARED rekall.c)
+    target_include_directories(rekall PRIVATE ${GLIB_INCLUDE_DIRS})
+endif (REKALL_PROFILES)
+
+
 set(libvmi_src
     accessors.c
     convenience.c
@@ -153,3 +163,7 @@ endif (ENABLE_ADDRESS_CACHE)
 if (ENABLE_SHM_SNAPSHOT)
     target_link_libraries(vmi shm)
 endif (ENABLE_SHM_SNAPSHOT)
+
+if (REKALL_PROFILES)
+    target_link_libraries(vmi rekall)
+endif (REKALL_PROFILES)
