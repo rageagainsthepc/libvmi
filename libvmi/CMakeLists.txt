@@ -21,7 +21,7 @@ if (REKALL_PROFILES)
     find_package(JSON-C REQUIRED)
     add_library(rekall SHARED rekall.c)
     target_include_directories(rekall PRIVATE ${JSON-C_INCLUDE_DIRS})
-    target_link_libraries(rekall ${JSON-C_LIBRARIES})
+    target_link_libraries(rekall PRIVATE ${JSON-C_LIBRARIES})
 endif ()
 
 set(libvmi_src
@@ -52,7 +52,7 @@ set_property(TARGET vmi PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 # create libvmi.so
 add_library (vmi_shared SHARED $<TARGET_OBJECTS:vmi>)
-target_link_libraries(vmi_shared ${GLIB_LDFLAGS} m)
+target_link_libraries(vmi_shared PUBLIC ${GLIB_LDFLAGS} m)
 set_target_properties(vmi_shared PROPERTIES OUTPUT_NAME "vmi")
 # set soname
 set_target_properties(vmi_shared PROPERTIES
@@ -67,45 +67,45 @@ if (ENABLE_STATIC)
 endif ()
 
 if (ENABLE_FREEBSD)
-    target_link_libraries(vmi_shared freebsd)
+    target_link_libraries(vmi_shared PRIVATE freebsd)
 endif ()
 
 if (ENABLE_LINUX)
-    target_link_libraries(vmi_shared linux)
+    target_link_libraries(vmi_shared PRIVATE linux)
 endif ()
 
 if (ENABLE_WINDOWS)
-    target_link_libraries(vmi_shared windows)
+    target_link_libraries(vmi_shared PRIVATE windows)
     list(APPEND VMI_PUBLIC_HEADERS peparse.h)
 endif ()
 
 if (ENABLE_FILE)
-    target_link_libraries(vmi_shared file_driver)
+    target_link_libraries(vmi_shared PRIVATE file_driver)
 endif ()
 
 if (ENABLE_KVM)
-    target_link_libraries(vmi_shared kvm_driver)
+    target_link_libraries(vmi_shared PRIVATE kvm_driver)
 endif ()
 
 if (ENABLE_XEN)
-    target_link_libraries(vmi_shared xen_driver)
+    target_link_libraries(vmi_shared PRIVATE xen_driver)
     list(APPEND VMI_PUBLIC_HEADERS events.h)
 endif ()
 
 if (ENABLE_ADDRESS_CACHE)
-    target_link_libraries(vmi_shared cache)
+    target_link_libraries(vmi_shared PRIVATE cache)
 endif ()
 
 if (ENABLE_SHM_SNAPSHOT)
-    target_link_libraries(vmi_shared shm)
+    target_link_libraries(vmi_shared PRIVATE shm)
 endif ()
 
 if (REKALL_PROFILES)
-    target_link_libraries(vmi_shared rekall)
+    target_link_libraries(vmi_shared PRIVATE rekall)
 endif ()
 
 if (ENABLE_CONFIGFILE)
-    target_link_libraries(vmi_shared config)
+    target_link_libraries(vmi_shared PRIVATE config)
 endif ()
 
 # install
@@ -122,3 +122,6 @@ if (ENABLE_STATIC)
     install(TARGETS vmi_static DESTINATION lib${LIBSUFFIX})
 endif ()
 install(FILES ${VMI_PUBLIC_HEADERS} DESTINATION include/libvmi)
+
+include(Libtool)
+create_libtool_file(vmi_shared /tmp)
