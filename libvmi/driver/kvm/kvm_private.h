@@ -30,18 +30,15 @@
 
 #include <libvirt/libvirt.h>
 #include <libvirt/virterror.h>
+#include <libmicrovmi.h>
 
 #include "private.h"
-#include "libvirt_wrapper.h"
 
 typedef struct kvm_instance {
-    virConnectPtr conn;
-    virDomainPtr dom;
     uint32_t id;
     char *name;
     char *ds_path;
-    int socket_fd;
-    libvirt_wrapper_t libvirt;
+    MicrovmiContext* microvmi_context;
 } kvm_instance_t;
 
 static inline kvm_instance_t *
