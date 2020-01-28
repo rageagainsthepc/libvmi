@@ -24,9 +24,8 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with LibVMI.  If not, see <http://www.gnu.org/licenses/>.
  */
-
+#include <libmicrovmi.h>
 #include "private.h"
-
 #include "driver/xen/xen.h"
 #include "driver/xen/xen_private.h"
 #include "driver/xen/xen_events.h"
@@ -40,202 +39,59 @@
 //----------------------------------------------------------------------------
 // Xen-Specific Interface Functions (no direct mapping to driver_*)
 
-//TODO assuming length == page size is safe for now, but isn't the most clean approach
-void *
-xen_get_memory_pfn(
-    vmi_instance_t vmi,
-    addr_t pfn,
-    int prot)
-{
-    xen_instance_t *xen = xen_get_instance(vmi);
-    void *memory = xen->libxcw.xc_map_foreign_range(xen->xchandle,
-                   xen->domainid,
-                   XC_PAGE_SIZE,
-                   prot,
-                   (unsigned long) pfn);
-
-    if (MAP_FAILED == memory || NULL == memory) {
-        dbprint(VMI_DEBUG_XEN, "--xen_get_memory_pfn failed on pfn=0x%"PRIx64"\n", pfn);
-        return NULL;
-    } else {
-        dbprint(VMI_DEBUG_XEN, "--xen_get_memory_pfn success on pfn=0x%"PRIx64"\n", pfn);
-    }
-
-#ifdef VMI_DEBUG
-    // copy memory to local address space - handy for examination
-    uint8_t buf[XC_PAGE_SIZE];
-
-    memcpy(buf, memory, XC_PAGE_SIZE);
-#endif // VMI_DEBUG
-
-    return memory;
-}
-
 void *
 xen_get_memory(
     vmi_instance_t vmi,
     addr_t paddr,
     uint32_t UNUSED(length))
 {
-    //TODO assuming length == page size is safe for now, but isn't the most clean approach
-    addr_t pfn = paddr >> vmi->page_shift;
+    uint8_t * page_buffer = g_try_malloc0(vmi->page_size);
+    if (!page_buffer)
+    {
+        return NULL;
+    }
 
-    return xen_get_memory_pfn(vmi, pfn, PROT_READ);
+    // We are assuming an aligned address
+    MicrovmiStatus status = microvmi_read_physical(xen_get_instance(vmi)->microvmi_context, paddr, page_buffer,
+                                                   vmi->page_size);
+    if (status != MicrovmiSuccess)
+    {
+        g_free(page_buffer);
+        return NULL;
+    }
+
+    return (void*) page_buffer;
 }
 
 void
 xen_release_memory(
     vmi_instance_t UNUSED(vmi),
     void *memory,
-    size_t length)
+    size_t UNUSED(length))
 {
-    munmap(memory, length);
+    if (memory)
+    {
+        g_free(memory);
+    }
 }
 
 status_t
 xen_put_memory(
-    vmi_instance_t vmi,
-    addr_t paddr,
-    uint32_t count,
-    void *buf)
+    vmi_instance_t UNUSED(vmi),
+    addr_t UNUSED(paddr),
+    uint32_t UNUSED(count),
+    void *UNUSED(buf))
 {
-    unsigned char *memory = NULL;
-    addr_t phys_address = 0;
-    addr_t pfn = 0;
-    addr_t offset = 0;
-    size_t buf_offset = 0;
-
-#if defined(ARM32) || defined(ARM64)
-    xen_instance_t *xen = xen_get_instance(vmi);
-#endif
-
-    while (count > 0) {
-        size_t write_len = 0;
-
-        /* access the memory */
-        phys_address = paddr + buf_offset;
-        pfn = phys_address >> vmi->page_shift;
-        offset = (vmi->page_size - 1) & phys_address;
-        memory = xen_get_memory_pfn(vmi, pfn, PROT_WRITE);
-        if (NULL == memory) {
-            return VMI_FAILURE;
-        }
-
-        /* determine how much we can write */
-        if ((offset + count) > vmi->page_size) {
-            write_len = vmi->page_size - offset;
-        } else {
-            write_len = count;
-        }
-
-        /*
-         * The ARM architecture doesn't provide cache coherence guarantees.
-         * To ensure that the CPUs won't use stale data we need to flush
-         * the l1&l2 cache manually.
-         * Prior to Xen 4.9 xc_domain_cacheflush only flushes the data caches.
-         * As such, if the modification is made to code that is actively in use,
-         * the CPUs may still execute stale instructions afterwards.
-         */
-#if defined(ARM32) || defined(ARM64)
-        xen_pause_vm(vmi);
-#endif
-
-        /* do the write */
-        memcpy(memory + offset, ((char *) buf) + buf_offset, write_len);
-
-#if defined(ARM32) || defined(ARM64)
-        xen->libxcw.xc_domain_cacheflush(xen->xchandle, xen->domainid, pfn, 1);
-        xen_resume_vm(vmi);
-#endif
-
-        /*
-         * We need to refresh the page cache after a page is written to
-         * because it might have had been a copy-on-write page. After this
-         * write the mapping changes but the cached reference is to the
-         * old (origin) page.
-         */
-        memory_cache_remove(vmi, (phys_address >> vmi->page_shift) << vmi->page_shift);
-
-        /* set variables for next loop */
-        count -= write_len;
-        buf_offset += write_len;
-        xen_release_memory(vmi, memory, vmi->page_size);
-    }
-
-    return VMI_SUCCESS;
+    return VMI_FAILURE;
 }
 
-
-
-//----------------------------------------------------------------------------
-// General Interface Functions (1-1 mapping to driver_* function)
-
-/*
- * This function is only usable with xenstore
- * formerly vmi_get_domain_id
- */
-#ifndef HAVE_LIBXENSTORE
 uint64_t xen_get_domainid_from_name(
     vmi_instance_t UNUSED(vmi),
-    const char* UNUSED(name))
-{
-    return VMI_INVALID_DOMID;
-}
-#else
-uint64_t xen_get_domainid_from_name(
-    vmi_instance_t vmi,
-    const char *name)
-{
-    if (name == NULL) {
+    const char *UNUSED(name))
+    {
         return VMI_INVALID_DOMID;
     }
 
-    xen_instance_t *xen = xen_get_instance(vmi);
-    char **domains = NULL;
-    unsigned int size = 0, i = 0;
-    xs_transaction_t xth = XBT_NULL;
-    uint64_t domainid = VMI_INVALID_DOMID;
-
-    struct xs_handle *xsh = xen->libxsw.xs_open(0);
-
-    if (!xsh)
-        goto _bail;
-
-    domains = xen->libxsw.xs_directory(xsh, xth, "/local/domain", &size);
-    for (i = 0; i < size; ++i) {
-        /* read in name */
-        char *idStr = domains[i];
-        char *tmp = g_strconcat("/local/domain/", idStr, "/name", NULL);
-        char *nameCandidate = xen->libxsw.xs_read(xsh, xth, tmp, NULL);
-        g_free(tmp);
-
-        // if name matches, then return number
-        if (nameCandidate != NULL &&
-                strncmp(name, nameCandidate, 100) == 0) {
-            domainid = strtoull(idStr, NULL, 0);
-            free(nameCandidate);
-            break;
-        }
-
-        /* free memory as we go */
-        if (nameCandidate)
-            free(nameCandidate);
-
-    }
-
-_bail:
-    if (domains)
-        free(domains);
-    if (xsh)
-        xen->libxsw.xs_close(xsh);
-    return domainid;
-}
-#endif
-
-/*
- * This function is only usable with xenstore
- */
-#ifndef HAVE_LIBXENSTORE
 status_t xen_get_name_from_domainid(
     vmi_instance_t UNUSED(vmi),
     uint64_t UNUSED(domainid),
@@ -243,108 +99,13 @@ status_t xen_get_name_from_domainid(
 {
     return VMI_FAILURE;
 }
-#else
-status_t xen_get_name_from_domainid(
-    vmi_instance_t vmi,
-    uint64_t domainid,
-    char** name)
-{
-    status_t ret = VMI_FAILURE;
-    if (domainid == VMI_INVALID_DOMID) {
-        return ret;
-    }
 
-    xen_instance_t *xen = xen_get_instance(vmi);
-    xs_transaction_t xth = XBT_NULL;
-
-    struct xs_handle *xsh = xen->libxsw.xs_open(0);
-
-    if (!xsh)
-        goto _bail;
-
-    gchar *tmp = g_strdup_printf("%"PRIu64, domainid);
-    gchar *tmp2 = g_strconcat("/local/domain/", tmp, "/name", NULL);
-    char *nameCandidate = xen->libxsw.xs_read(xsh, xth, tmp2, NULL);
-    g_free(tmp);
-    g_free(tmp2);
-
-    if (nameCandidate != NULL) {
-        *name = nameCandidate;
-        ret = VMI_SUCCESS;
-    }
-
-_bail:
-    if (xsh)
-        xen->libxsw.xs_close(xsh);
-    return ret;
-}
-#endif
-
-#ifndef HAVE_LIBXENSTORE
 uint64_t xen_get_domainid_from_uuid(
     vmi_instance_t UNUSED(vmi),
     const char* UNUSED(uuid))
 {
     return VMI_FAILURE;
 }
-#else
-uint64_t xen_get_domainid_from_uuid(
-    vmi_instance_t vmi,
-    const char* uuid)
-{
-    if (uuid == NULL) {
-        return VMI_INVALID_DOMID;
-    }
-
-    xen_instance_t *xen = xen_get_instance(vmi);
-    char **domains = NULL;
-    unsigned int size = 0, i = 0;
-    xs_transaction_t xth = XBT_NULL;
-    uint64_t domainid = VMI_INVALID_DOMID;
-
-    struct xs_handle *xsh = xen->libxsw.xs_open(0);
-
-    if (!xsh)
-        goto _bail;
-
-    domains = xen->libxsw.xs_directory(xsh, xth, "/local/domain", &size);
-    for (i = 0; i < size; ++i) {
-        /* read in ID */
-        char *idStr = domains[i];
-        char *tmp = g_strconcat("/local/domain/", idStr, "/vm", NULL);
-        char *path = xen->libxsw.xs_read(xsh, xth, tmp, NULL);
-
-        g_free(tmp);
-        if (path && path[0] != '\0') {
-            tmp = g_strconcat(path, "/uuid", NULL);
-
-            char *uuidCandidate = xen->libxsw.xs_read(xsh, xth, tmp, NULL);
-
-            /* if uuid matches, then return number */
-            if (uuidCandidate != NULL &&
-                    strncmp(uuid, uuidCandidate, 100) == 0) {
-                domainid = strtoull(idStr, NULL, 0);
-                free(uuidCandidate);
-                g_free(path);
-                g_free(tmp);
-                break;
-            }
-            /* free memory as we go */
-            g_free(path);
-            g_free(tmp);
-            if (uuidCandidate)
-                free(uuidCandidate);
-        }
-    }
-
-_bail:
-    if (domains)
-        free(domains);
-    if (xsh)
-        xen->libxsw.xs_close(xsh);
-    return domainid;
-}
-#endif
 
 uint64_t
 xen_get_domainid(
@@ -363,82 +124,17 @@ xen_set_domainid(
 
 status_t
 xen_check_domainid(
-    vmi_instance_t vmi,
+    vmi_instance_t UNUSED(vmi),
     uint64_t domainid)
 {
-    status_t ret = VMI_FAILURE;
-    xc_dominfo_t info;
     domid_t max_domid = ~0;
-    int rc;
-    xen_instance_t *xen = NULL;
 
     if ( domainid > max_domid ) {
         dbprint(VMI_DEBUG_XEN,"Domain ID is invalid, larger then the max supported on Xen!\n");
-        return ret;
+        return VMI_FAILURE;
     }
 
-    xen = xen_get_instance(vmi);
-
-    rc = xen->libxcw.xc_domain_getinfo(xen->xchandle, domainid, 1, &info);
-
-    if (rc==1 && info.domid==(uint32_t)domainid)
-        ret = VMI_SUCCESS;
-    else
-        xen_destroy(vmi);
-
-    return ret;
-}
-
-static inline status_t
-xen_discover_pv_type(
-    vmi_instance_t vmi)
-{
-    status_t ret = VMI_SUCCESS;
-
-    /* Only for x86 */
-#if defined(I386) || defined(X86_64)
-
-    xen_instance_t *xen = xen_get_instance(vmi);
-    int rc;
-    xen_domctl_t domctl = { 0 };
-
-    domctl.domain = xen->domainid;
-
-    // TODO: test this on a 32-bit PV guest
-    // Note: it appears that this DOMCTL does not wok on an HVM
-    domctl.cmd = XEN_DOMCTL_get_address_size;
-
-    // This DOMCTL always returns 0 (Xen 4.1.2)
-    //domctl.cmd    = XEN_DOMCTL_get_machine_address_size;
-
-    rc = xen->libxcw.xc_domctl(xen->xchandle, &domctl);
-    if (rc) {
-        errprint("Failed to get domain address width (#1), value retrieved %d\n",
-                 domctl.u.address_size.size);
-        goto _bail;
-    }   // if
-
-    // translate width to bytes from bits
-    uint32_t addr_width = domctl.u.address_size.size / 8;
-    dbprint(VMI_DEBUG_XEN, "**guest address width is %d bytes\n", addr_width);
-
-    switch (addr_width) {
-        case 8:
-            vmi->vm_type = PV64;
-            break;
-        case 4:
-            vmi->vm_type = PV32;
-            break;
-        default:
-            errprint("Failed to get domain address width (#2), value retrieved %d\n",
-                     domctl.u.address_size.size);
-            ret = VMI_FAILURE;
-            goto _bail;
-    };
-#endif
-
-_bail:
-    return ret;
+    return VMI_SUCCESS;
 }
 
 /**
@@ -454,124 +150,26 @@ xen_setup_live_mode(
     return VMI_SUCCESS;
 }
 
-static inline status_t
-xen_get_version(
-    xen_instance_t *xen)
-{
-    status_t status = VMI_FAILURE;
-    char *line = NULL;
-    size_t len = 0;
-    ssize_t read;
-
-    FILE *fp = fopen("/sys/hypervisor/type", "r");
-    if ( !fp )
-        goto done;
-
-    if ((read = getline(&line, &len, fp)) == -1)
-        goto done;
-
-    if ( strncmp("xen", line, 3) )
-        goto done;
-
-    free(line);
-    fclose(fp);
-    line = NULL;
-    fp = NULL;
-
-    fp = fopen("/sys/hypervisor/version/major", "r");
-    if ( !fp )
-        goto done;
-
-    if ((read = getline(&line, &len, fp)) == -1)
-        goto done;
-
-    xen->major_version = atoi(line);
-
-    free(line);
-    fclose(fp);
-    line = NULL;
-    fp = NULL;
-
-    fp = fopen("/sys/hypervisor/version/minor", "r");
-    if ( !fp )
-        goto done;
-
-    if ((read = getline(&line, &len, fp)) == -1)
-        goto done;
-
-    xen->minor_version = atoi(line);
-    status = VMI_SUCCESS;
-
-    dbprint(VMI_DEBUG_XEN, "**The running Xen version is %u.%u\n",
-            xen->major_version, xen->minor_version);
-
-done:
-    if ( line )
-        free(line);
-    if ( fp )
-        fclose(fp);
-    return status;
-}
-
-#ifdef HAVE_LIBXENSTORE
-static int domains_compare(
-    const void *data1,
-    const void *data2,
-    __attribute__((unused)) void *user_data)
-{
-    domid_t *d1 = (domid_t *)data1, *d2 = (domid_t *)data2;
-
-    if (*d1 == *d2)
-        return 0;
-
-    return ( *d1 < *d2 ) ? -1 : 1;
-}
-
-void key_destroy_func(
-    void *key)
-{
-    free(key);
-}
-
-void value_destroy_func(
-    void *value)
-{
-    free(value);
-}
-#endif
-
 status_t
 xen_init(
     vmi_instance_t vmi,
-    uint32_t UNUSED(init_flags),
+    uint32_t init_flags,
     vmi_init_data_t *UNUSED(init_data))
 {
+    if ((init_flags & VMI_INIT_DOMAINNAME) == 0 )
+    {
+        errprint("%s: Currently only initialization by domain name is allowed.\n", __FUNCTION__);
+        return VMI_FAILURE;
+    }
+
     if ( xen_get_instance(vmi) )
+    {
         return VMI_SUCCESS;
+    }
 
     xen_instance_t *xen = g_try_malloc0(sizeof(xen_instance_t));
 
-    if ( VMI_FAILURE == xen_get_version(xen) ) {
-        g_free(xen);
-        return VMI_FAILURE;
-    }
-
-    if ( VMI_FAILURE == create_libxc_wrapper(xen) ) {
-        dbprint(VMI_DEBUG_XEN, "Failed to find a suitable xenctrl.so!\n");
-        g_free(xen);
-        return VMI_FAILURE;
-    }
-
-    /* initialize other xen-specific values */
-#ifdef HAVE_LIBXENSTORE
-    if ( VMI_FAILURE == create_libxs_wrapper(xen) ) {
-        dbprint(VMI_DEBUG_XEN, "Failed to find a suitable xenstore.so!\n");
-        xen->libxcw.xc_interface_close(xen->xchandle);
-        g_free(xen);
-        return VMI_FAILURE;
-    }
-    xen->domains = g_tree_new_full ((GCompareDataFunc)domains_compare, NULL, key_destroy_func, value_destroy_func);
-#endif
+    // Since there is no general initialization vor libmicrovmi we cannot probe anything here.
 
     vmi->driver.driver_data = (void *)xen;
     return VMI_SUCCESS;
@@ -580,33 +178,23 @@ xen_init(
 status_t
 xen_init_vmi(
     vmi_instance_t vmi,
-    uint32_t init_flags,
-    vmi_init_data_t *init_data)
+    uint32_t UNUSED(init_flags),
+    vmi_init_data_t *UNUSED(init_data))
 {
-    status_t ret = VMI_FAILURE;
     xen_instance_t *xen = xen_get_instance(vmi);
-    int rc;
 
-    /* setup the info struct */
-    rc = xen->libxcw.xc_domain_getinfo(xen->xchandle,
-                                       xen->domainid,
-                                       1,
-                                       &xen->info);
-    if (rc != 1) {
-        errprint("Failed to get domain info for Xen.\n");
-        goto _bail;
+    DriverType driver_type = Xen;
+    xen->microvmi_context = microvmi_init(xen->name, &driver_type);
+    if (!xen->microvmi_context)
+    {
+        return VMI_FAILURE;
     }
 
-    /* record the count of VCPUs used by this instance */
-    vmi->num_vcpus = xen->info.max_vcpu_id + 1;
+    // Assume single vcpu.
+    vmi->num_vcpus = 1;
 
-    /* determine if target is hvm or pv */
-    if ( xen->info.hvm ) {
-        vmi->vm_type = HVM;
-    } else if ( VMI_FAILURE == xen_discover_pv_type(vmi) ) {
-        errprint("Failed to determine PV type for Xen.\n");
-        goto _bail;
-    }
+    // We just assume that the guest is always fully virtualized for now.
+    vmi->vm_type = HVM;
 
     if ( vmi->vm_type == HVM )
         dbprint(VMI_DEBUG_XEN, "**set vm_type HVM\n");
@@ -615,55 +203,31 @@ xen_init_vmi(
     if ( vmi->vm_type == PV64 )
         dbprint(VMI_DEBUG_XEN, "**set vm_type PV64\n");
 
-    if ( xen->major_version == 4 && xen->minor_version < 6 )
-        xen->max_gpfn = (uint64_t)xen->libxcw.xc_domain_maximum_gpfn(xen->xchandle, xen->domainid);
-    else if (xen->libxcw.xc_domain_maximum_gpfn2(xen->xchandle, xen->domainid, (xen_pfn_t*)&xen->max_gpfn)) {
-        errprint("Failed to get max gpfn for Xen.\n");
-        ret = VMI_FAILURE;
-        goto _bail;
-    }
+    uint64_t max_paddr = 0;
+    xen->max_gpfn = microvmi_get_max_physical_addr(xen->microvmi_context, &max_paddr);
 
-    if (xen->max_gpfn <= 0) {
+    if (xen->max_gpfn <= 0)
+    {
         errprint("Failed to get max gpfn for Xen.\n");
-        ret = VMI_FAILURE;
-        goto _bail;
+        return VMI_FAILURE;
     }
 
     /* For Xen PV domains, where xc_domain_maximum_gpfn() returns a number
      * more like nr_pages, which is usually less than max_pages or the
      * calculated number of pages based on memkb, just fake it to be sane. */
-    if ( vmi->vm_type >= PV32 && (xen->max_gpfn << XC_PAGE_SHIFT) < (xen->info.max_memkb * 1024)) {
+    if ( vmi->vm_type >= PV32 && (xen->max_gpfn << XC_PAGE_SHIFT) < (xen->info.max_memkb * 1024))
+    {
         xen->max_gpfn = (xen->info.max_memkb * 1024) >> XC_PAGE_SHIFT;
     }
 
-    ret = xen_setup_live_mode(vmi);
-
-    if ( VMI_FAILURE == ret )
-        goto _bail;
-
-#if defined(I386) || defined(X86_64)
-    if ( vmi->vm_type == HVM && (vmi->init_flags & VMI_INIT_EVENTS) )
-#elif defined(ARM32) || defined(ARM64)
-    if ( vmi->init_flags & VMI_INIT_EVENTS )
-#endif
-    {
-        ret = xen_init_events(vmi, init_flags, init_data);
-
-        if ( VMI_FAILURE == ret )
-            goto _bail;
-    }
-
-    xen_init_altp2m(vmi);
-
-_bail:
-    return ret;
+    return xen_setup_live_mode(vmi);
 }
 
 status_t xen_domainwatch_init(
-    vmi_instance_t vmi,
-    uint32_t init_flags)
+    vmi_instance_t UNUSED(vmi),
+    uint32_t UNUSED(init_flags))
 {
-    return xen_domainwatch_init_events(vmi, init_flags);
+    return VMI_FAILURE;
 }
 
 void
@@ -674,33 +238,10 @@ xen_destroy(
 
     if (!xen) return;
 
-#if defined(I386) || defined(X86_64)
-    if ( vmi->vm_type == HVM && (vmi->init_flags & VMI_INIT_EVENTS) )
-#elif defined(ARM32) || defined(ARM64)
-    if ( vmi->init_flags & VMI_INIT_EVENTS )
-#endif
+    if (xen->microvmi_context)
     {
-        xen_events_destroy(vmi);
+        microvmi_destroy(xen->microvmi_context);
     }
-
-    xc_interface *xchandle = xen_get_xchandle(vmi);
-    if ( xchandle )
-        xen->libxcw.xc_interface_close(xchandle);
-
-    if (dlclose(xen->libxcw.handle))
-        errprint("dlclose failed: %s\n", strerror(errno));
-
-#ifdef HAVE_LIBXENSTORE
-    if (xen->xshandle) {
-        xen->libxsw.xs_unwatch(xen->xshandle, "@introduceDomain", INTRODUCE_TOKEN);
-        xen->libxsw.xs_unwatch(xen->xshandle, "@releaseDomain", RELEASE_TOKEN);
-        xen->libxsw.xs_close(xen->xshandle);
-    }
-
-    if (dlclose(xen->libxsw.handle))
-        errprint("dlclose failed: %s\n", strerror(errno));
-    g_tree_destroy(xen->domains);
-#endif
 
     g_free(xen->name);
     g_free(xen);

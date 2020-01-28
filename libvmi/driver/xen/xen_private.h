@@ -37,6 +37,7 @@
 #include <stdint.h>
 #include <xenctrl.h>
 #include <xen/hvm/save.h>
+#include <libmicrovmi.h>
 
 #include "private.h"
 #include "libxc_wrapper.h"
@@ -70,6 +71,8 @@ typedef struct xen_instance {
     uint64_t max_gpfn;    /**< result of xc_domain_maximum_gpfn/2() */
 
     GTree *domains; /**< tree for running xen domains */
+
+    MicrovmiContext *microvmi_context;
 
 } xen_instance_t;
 
